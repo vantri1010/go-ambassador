@@ -6,8 +6,6 @@ dist/
 
 # Ignore dependency directories
 vendor/
-go.mod
-go.sum
 
 # Ignore Air configuration file
 .air.toml
@@ -19,8 +17,6 @@ go.sum
 *.swo
 
 # Ignore Docker-related files
-Dockerfile
-docker-compose.yml
 .env
 
 # Ignore log files and databases
