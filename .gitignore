@@ -1,0 +1,36 @@
+# Ignore Go binaries and build artifacts
+bin/
+dist/
+*.exe
+*.out
+
+# Ignore dependency directories
+vendor/
+go.mod
+go.sum
+
+# Ignore Air configuration file
+.air.toml
+
+# Ignore IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Ignore Docker-related files
+Dockerfile
+docker-compose.yml
+.env
+
+# Ignore log files and databases
+*.log
+*.sqlite
+*.db
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore mount DB folder
+.dbdata
