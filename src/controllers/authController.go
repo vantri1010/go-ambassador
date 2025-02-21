@@ -139,8 +139,7 @@ func UpdatePassword(c *fiber.Ctx) error {
 	}
 
 	if data["password"] != data["password_confirm"] {
-		c.Status(400)
-		return c.JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "passwords do not match",
 		})
 	}

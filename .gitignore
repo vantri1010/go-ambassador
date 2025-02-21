@@ -1,14 +1,12 @@
 # Ignore Go binaries and build artifacts
 bin/
+tmp/
 dist/
 *.exe
 *.out
 
 # Ignore dependency directories
 vendor/
-
-# Ignore Air configuration file
-.air.toml
 
 # Ignore IDE specific files
 .idea/
