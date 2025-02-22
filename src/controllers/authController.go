@@ -5,9 +5,8 @@ import (
 	"ambassador/src/middlewares"
 	"ambassador/src/models"
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt"
 	"golang.org/x/crypto/bcrypt"
-	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,7 +27,7 @@ func Register(c *fiber.Ctx) error {
 		FirstName:    data["first_name"],
 		LastName:     data["last_name"],
 		Email:        data["email"],
-		IsAmbassador: false,
+		IsAmbassador: strings.Contains(c.Path(), "/api/ambassador"),
 	}
 	user.SetPassword(data["password"])
 
@@ -58,12 +57,16 @@ func Login(c *fiber.Ctx) error {
 		})
 	}
 
-	payload := jwt.StandardClaims{
-		Subject:   strconv.Itoa(int(user.Id)),
-		ExpiresAt: time.Now().Add(time.Hour * 24).Unix(),
+	isAmbassador := strings.Contains(c.Path(), "/api/ambassador")
+	scope := "admin"
+
+	if isAmbassador {
+		scope = "ambassador"
+	} else if user.IsAmbassador { // When ambassador user try to login to admin link
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"message": "unauthorized non-admin user"})
 	}
 
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, payload).SignedString([]byte("secret"))
+	token, err := middlewares.GenerateJWT(user.Id, scope)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Invalid Credentials",
@@ -84,12 +87,18 @@ func Login(c *fiber.Ctx) error {
 	})
 }
 
-// Send cookie get user
+// User Send cookie get user
 func User(c *fiber.Ctx) error {
 	id, _ := middlewares.GetUserId(c)
 
 	var user models.User
 	database.DB.Model(&models.User{}).Where("id = ?", id).First(&user)
+
+	if strings.Contains(c.Path(), "/api/ambassador") {
+		ambassador := models.Ambassador(user)
+		ambassador.CalculateRevenue(database.DB)
+		return c.JSON(ambassador)
+	}
 
 	return c.JSON(user)
 }
