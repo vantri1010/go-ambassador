@@ -16,8 +16,6 @@ func Connect() {
 	if err != nil {
 		panic("Could not connect to database")
 	}
-
-	//print(DB.Name())
 }
 
 func AutoMigrate() {

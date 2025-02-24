@@ -20,40 +20,52 @@ func (user *User) SetPassword(password string) {
 	user.Password = hashedPassword
 }
 
+func (user *User) ComparePassword(password string) error {
+	return bcrypt.CompareHashAndPassword(user.Password, []byte(password))
+}
+
+func (user *User) Name() string {
+	return user.FirstName + " " + user.LastName
+}
+
 type Admin User
 
 func (admin *Admin) CalculateRevenue(db *gorm.DB) {
 	var orders []Order
-	db.Preload("OrdersItems").Find(&orders, &Order{
+
+	db.Preload("OrderItems").Find(&orders, &Order{
 		UserId:   admin.Id,
 		Complete: true,
 	})
 
-	var rev float64 = 0
+	var revenue float64 = 0
+
 	for _, order := range orders {
-		for _, item := range order.OrderItems {
-			rev += item.AmbassadorRevenue
+		for _, orderItem := range order.OrderItems {
+			revenue += orderItem.AdminRevenue
 		}
 	}
 
-	admin.Revenue = &rev
+	admin.Revenue = &revenue
 }
 
 type Ambassador User
 
 func (ambassador *Ambassador) CalculateRevenue(db *gorm.DB) {
 	var orders []Order
-	db.Preload("OrdersItems").Find(&orders, &Order{
+
+	db.Preload("OrderItems").Find(&orders, &Order{
 		UserId:   ambassador.Id,
 		Complete: true,
 	})
 
-	var rev float64 = 0
+	var revenue float64 = 0.0
+
 	for _, order := range orders {
-		for _, item := range order.OrderItems {
-			rev += item.AmbassadorRevenue
+		for _, orderItem := range order.OrderItems {
+			revenue += orderItem.AmbassadorRevenue
 		}
 	}
 
-	ambassador.Revenue = &rev
+	ambassador.Revenue = &revenue
 }

@@ -26,6 +26,7 @@ func CreateProduct(c *fiber.Ctx) error {
 	}
 
 	database.DB.Create(&product)
+	go database.ClearCache("products_frontend", "products_backend")
 
 	return c.JSON(&product)
 }
@@ -44,6 +45,7 @@ func DeleteProduct(c *fiber.Ctx) error {
 	id, _ := strconv.Atoi(c.Params("id"))
 
 	database.DB.Delete(&models.Product{}, id)
+	go database.ClearCache("products_frontend", "products_backend")
 
 	return c.JSON(fiber.Map{
 		"message": "Product deleted",
@@ -58,6 +60,7 @@ func UpdateProduct(c *fiber.Ctx) error {
 	}
 
 	database.DB.Model(&product).Where("id = ?", id).Updates(product)
+	go database.ClearCache("products_frontend", "products_backend")
 
 	return c.JSON(product)
 }
@@ -131,24 +134,29 @@ func ProductsBackend(c *fiber.Ctx) error {
 
 	var total = len(searchedProducts)
 	page, _ := strconv.Atoi(c.Query("page", "1"))
-	perPage := 9
+	itemsPerPage := 9
+	if page <= 0 || page > (total/itemsPerPage+1) {
+		page = 1
+	}
 
 	var data []models.Product
 
-	if total <= page*perPage && total >= (page-1)*perPage {
-		data = searchedProducts[(page-1)*perPage : total]
-	} else if total >= page*perPage {
-		data = searchedProducts[(page-1)*perPage : page*perPage]
+	// Check if items remain less than items per page that should return a.k.a the last page
+	if total <= page*itemsPerPage && total >= (page-1)*itemsPerPage {
+		data = searchedProducts[(page-1)*itemsPerPage : total]
+	} else if total >= page*itemsPerPage {
+		data = searchedProducts[(page-1)*itemsPerPage : page*itemsPerPage]
 	} else {
 		data = []models.Product{}
 	}
 
 	return c.JSON(fiber.Map{
 		"data": data,
+
 		"meta": fiber.Map{
 			"total":     total,
 			"page":      page,
-			"last_page": total/perPage + 1,
+			"last_page": total/itemsPerPage + 1,
 		},
 	})
 }
