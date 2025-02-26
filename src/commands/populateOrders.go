@@ -26,8 +26,13 @@ func main() {
 			})
 		}
 
+		// Generate a random number between 31 and 64
+		min := 31
+		max := 64
+		randomNum := uint(min + rand.Intn(max-min+1))
+
 		database.DB.Create(&models.Order{
-			UserId:          uint(rand.Intn(30) + 1),
+			UserId:          randomNum,
 			Code:            faker.Username(),
 			AmbassadorEmail: faker.Email(),
 			FirstName:       faker.FirstName(),
