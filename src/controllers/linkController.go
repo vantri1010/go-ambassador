@@ -4,8 +4,10 @@ import (
 	"ambassador/src/database"
 	"ambassador/src/middlewares"
 	"ambassador/src/models"
+	"errors"
 	"github.com/go-faker/faker/v4"
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 	"strconv"
 )
 
@@ -53,22 +55,40 @@ func CreateLink(c *fiber.Ctx) error {
 
 func Stats(c *fiber.Ctx) error {
 	id, _ := middlewares.GetUserId(c)
+
+	// Fetch all links for the user
 	var links []models.Link
-	database.DB.Find(&links, models.Link{
-		UserId: id,
-	})
-
-	var result []interface{}
-	var orders []models.Order
-
-	for _, link := range links {
-		database.DB.Preload("OrderItems").Find(&orders, &models.Order{
-			Code:     link.Code,
-			Complete: true,
+	if err := database.DB.Where("user_id = ?", id).Find(&links).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch links",
 		})
+	}
 
+	// Collect all link codes
+	linkCodes := make([]string, len(links))
+	for i, link := range links {
+		linkCodes[i] = link.Code
+	}
+
+	// Fetch all orders for the link codes in one query
+	var orders []models.Order
+	if err := database.DB.Preload("OrderItems").Where("code IN (?) AND complete = ?", linkCodes, true).Find(&orders).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch orders",
+		})
+	}
+
+	// Group orders by link code
+	ordersByCode := make(map[string][]models.Order)
+	for _, order := range orders {
+		ordersByCode[order.Code] = append(ordersByCode[order.Code], order)
+	}
+
+	// Prepare the result
+	result := make([]fiber.Map, 0, len(links))
+	for _, link := range links {
+		orders := ordersByCode[link.Code]
 		revenue := 0.0
-
 		for _, order := range orders {
 			revenue += order.GetTotal()
 		}
@@ -86,11 +106,21 @@ func Stats(c *fiber.Ctx) error {
 func GetLink(c *fiber.Ctx) error {
 	code := c.Params("code")
 
-	link := models.Link{
-		Code: code,
-	}
+	// Fetch the link with the given code and preload User and Products
+	var link models.Link
+	result := database.DB.Preload("User").Preload("Products").Where("code = ?", code).First(&link)
 
-	database.DB.Preload("User").Preload("Products").First(&link)
+	// Check if the link was found
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "Link not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch link",
+		})
+	}
 
 	return c.JSON(link)
 }

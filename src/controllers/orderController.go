@@ -9,6 +9,7 @@ import (
 	"github.com/stripe/stripe-go/v81"
 	"github.com/stripe/stripe-go/v81/checkout/session"
 	"net/smtp"
+	"os"
 )
 
 func Orders(c *fiber.Ctx) error {
@@ -40,18 +41,26 @@ func CreateOrder(c *fiber.Ctx) error {
 	var request CreateOrderRequest
 
 	if err := c.BodyParser(&request); err != nil {
-		return err
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid request body",
+		})
 	}
 
-	link := models.Link{
-		Code: request.Code,
+	fmt.Println("test request data: \n" + request.FirstName + "\n" + request.LastName + "\n" + request.Email + "\n" + request.Address)
+
+	// Input validation
+	if len(request.FirstName) == 0 || len(request.LastName) == 0 || len(request.Email) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "First name, last name, and email are required",
+		})
 	}
 
-	database.DB.Preload("User").First(&link)
+	link := models.Link{}
+
+	database.DB.Preload("User").Where("code = ?", request.Code).First(&link)
 
 	if link.Id == 0 {
-		c.Status(fiber.StatusBadRequest)
-		return c.JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "Invalid link!",
 		})
 	}
@@ -73,8 +82,7 @@ func CreateOrder(c *fiber.Ctx) error {
 
 	if err := tx.Create(&order).Error; err != nil {
 		tx.Rollback()
-		c.Status(fiber.StatusBadRequest)
-		return c.JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": err.Error(),
 		})
 	}
@@ -99,8 +107,7 @@ func CreateOrder(c *fiber.Ctx) error {
 
 		if err := tx.Create(&item).Error; err != nil {
 			tx.Rollback()
-			c.Status(fiber.StatusBadRequest)
-			return c.JSON(fiber.Map{
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"message": err.Error(),
 			})
 		}
@@ -119,21 +126,21 @@ func CreateOrder(c *fiber.Ctx) error {
 		})
 	}
 
-	stripe.Key = "sk_test_51H0wSsFHUJ5mamKOVQx6M8kihCIxpBk6DzOhrf4RrpEgqh2bfpI7vbsVu2j5BT0KditccHBnepG33QudcrtBUHfv00Bbw1XXjL"
+	stripe.Key = os.Getenv("STRIPE_SECRET_KEY")
 
 	params := stripe.CheckoutSessionParams{
 		SuccessURL:         stripe.String("http://localhost:5000/success?source={CHECKOUT_SESSION_ID}"),
 		CancelURL:          stripe.String("http://localhost:5000/error"),
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
 		LineItems:          lineItems,
+		Mode:               stripe.String("payment"),
 	}
 
 	source, err := session.New(&params)
 
 	if err != nil {
 		tx.Rollback()
-		c.Status(fiber.StatusBadRequest)
-		return c.JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": err.Error(),
 		})
 	}
@@ -142,17 +149,39 @@ func CreateOrder(c *fiber.Ctx) error {
 
 	if err := tx.Save(&order).Error; err != nil {
 		tx.Rollback()
-		c.Status(fiber.StatusBadRequest)
-		return c.JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": err.Error(),
 		})
 	}
 
 	tx.Commit()
 
+	// Send email asynchronously
+	//go func(order models.Order) {
+	//	ambassadorRevenue := 0.0
+	//	adminRevenue := 0.0
+	//
+	//	for _, item := range order.OrderItems {
+	//		ambassadorRevenue += item.AmbassadorRevenue
+	//		adminRevenue += item.AdminRevenue
+	//	}
+	//
+	//	user := models.User{}
+	//	user.Id = order.UserId
+	//
+	//	database.DB.First(&user)
+	//
+	//	database.Cache.ZIncrBy(context.Background(), "rankings", ambassadorRevenue, user.Name())
+	//
+	//	ambassadorMessage := []byte(fmt.Sprintf("You earned $%f from the link #%s", ambassadorRevenue, order.Code))
+	//	smtp.SendMail("host.docker.internal:1025", nil, "no-reply@email.com", []string{order.AmbassadorEmail}, ambassadorMessage)
+	//
+	//	adminMessage := []byte(fmt.Sprintf("Order #%d with a total of $%f has been completed", order.Id, adminRevenue))
+	//	smtp.SendMail("host.docker.internal:1025", nil, "no-reply@email.com", []string{"admin@admin.com"}, adminMessage)
+	//}(order)
+
 	return c.JSON(source)
 }
-
 func CompleteOrder(c *fiber.Ctx) error {
 	var data map[string]string
 
