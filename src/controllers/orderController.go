@@ -4,10 +4,13 @@ import (
 	"ambassador/src/database"
 	"ambassador/src/models"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stripe/stripe-go/v81"
 	"github.com/stripe/stripe-go/v81/checkout/session"
+	"gorm.io/gorm"
+	"log"
 	"net/smtp"
 	"os"
 )
@@ -45,8 +48,6 @@ func CreateOrder(c *fiber.Ctx) error {
 			"message": "Invalid request body",
 		})
 	}
-
-	fmt.Println("test request data: \n" + request.FirstName + "\n" + request.LastName + "\n" + request.Email + "\n" + request.Address)
 
 	// Input validation
 	if len(request.FirstName) == 0 || len(request.LastName) == 0 || len(request.Email) == 0 {
@@ -156,79 +157,81 @@ func CreateOrder(c *fiber.Ctx) error {
 
 	tx.Commit()
 
-	// Send email asynchronously
-	//go func(order models.Order) {
-	//	ambassadorRevenue := 0.0
-	//	adminRevenue := 0.0
-	//
-	//	for _, item := range order.OrderItems {
-	//		ambassadorRevenue += item.AmbassadorRevenue
-	//		adminRevenue += item.AdminRevenue
-	//	}
-	//
-	//	user := models.User{}
-	//	user.Id = order.UserId
-	//
-	//	database.DB.First(&user)
-	//
-	//	database.Cache.ZIncrBy(context.Background(), "rankings", ambassadorRevenue, user.Name())
-	//
-	//	ambassadorMessage := []byte(fmt.Sprintf("You earned $%f from the link #%s", ambassadorRevenue, order.Code))
-	//	smtp.SendMail("host.docker.internal:1025", nil, "no-reply@email.com", []string{order.AmbassadorEmail}, ambassadorMessage)
-	//
-	//	adminMessage := []byte(fmt.Sprintf("Order #%d with a total of $%f has been completed", order.Id, adminRevenue))
-	//	smtp.SendMail("host.docker.internal:1025", nil, "no-reply@email.com", []string{"admin@admin.com"}, adminMessage)
-	//}(order)
-
 	return c.JSON(source)
 }
+
 func CompleteOrder(c *fiber.Ctx) error {
 	var data map[string]string
 
+	// Parse the request body
 	if err := c.BodyParser(&data); err != nil {
-		return err
-	}
-
-	order := models.Order{}
-
-	database.DB.Preload("OrderItems").First(&order, models.Order{
-		TransactionId: data["source"],
-	})
-
-	if order.Id == 0 {
-		c.Status(fiber.StatusNotFound)
-		return c.JSON(fiber.Map{
-			"message": "Order not found",
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid request body",
 		})
 	}
 
+	// Validate the "source" field
+	source := data["source"]
+	if source == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Source is required",
+		})
+	}
+
+	// Fetch the order with the given transaction ID
+	var order models.Order
+	if err := database.DB.Preload("OrderItems").Where("transaction_id = ?", source).First(&order).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "Order not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch order",
+		})
+	}
+
+	// Mark the order as complete
 	order.Complete = true
-	database.DB.Save(&order)
+	if err := database.DB.Save(&order).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to update order",
+		})
+	}
 
-	go func(order models.Order) {
-		ambassadorRevenue := 0.0
-		adminRevenue := 0.0
+	// Calculate ambassador and admin revenue
+	ambassadorRevenue := 0.0
+	adminRevenue := 0.0
+	for _, item := range order.OrderItems {
+		ambassadorRevenue += item.AmbassadorRevenue
+		adminRevenue += item.AdminRevenue
+	}
 
-		for _, item := range order.OrderItems {
-			ambassadorRevenue += item.AmbassadorRevenue
-			adminRevenue += item.AdminRevenue
+	// Fetch the user associated with the order
+	var user models.User
+	if err := database.DB.First(&user, "id = ?", order.UserId).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch user",
+		})
+	}
+
+	// Update rankings in Redis
+	if err := database.Cache.ZIncrBy(context.Background(), "rankings", ambassadorRevenue, user.Name()).Err(); err != nil {
+		log.Printf("Failed to update rankings in Redis: %v", err)
+	}
+
+	// Send emails asynchronously
+	go func(order models.Order, ambassadorRevenue, adminRevenue float64) {
+		ambassadorMessage := []byte(fmt.Sprintf("You earned $%f from the link #%s", ambassadorRevenue, order.Code))
+		if err := smtp.SendMail("host.docker.internal:1025", nil, "no-reply@email.com", []string{order.AmbassadorEmail}, ambassadorMessage); err != nil {
+			log.Printf("Failed to send email to ambassador: %v", err)
 		}
 
-		user := models.User{}
-		user.Id = order.UserId
-
-		database.DB.First(&user)
-
-		database.Cache.ZIncrBy(context.Background(), "rankings", ambassadorRevenue, user.Name())
-
-		ambassadorMessage := []byte(fmt.Sprintf("You earned $%f from the link #%s", ambassadorRevenue, order.Code))
-
-		smtp.SendMail("host.docker.internal:1025", nil, "no-reply@email.com", []string{order.AmbassadorEmail}, ambassadorMessage)
-
 		adminMessage := []byte(fmt.Sprintf("Order #%d with a total of $%f has been completed", order.Id, adminRevenue))
-
-		smtp.SendMail("host.docker.internal:1025", nil, "no-reply@email.com", []string{"admin@admin.com"}, adminMessage)
-	}(order)
+		if err := smtp.SendMail("host.docker.internal:1025", nil, "no-reply@email.com", []string{"admin@admin.com"}, adminMessage); err != nil {
+			log.Printf("Failed to send email to admin: %v", err)
+		}
+	}(order, ambassadorRevenue, adminRevenue)
 
 	return c.JSON(fiber.Map{
 		"message": "success",
