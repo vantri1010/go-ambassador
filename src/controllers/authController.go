@@ -121,45 +121,100 @@ func Logout(c *fiber.Ctx) error {
 func UpdateInfo(c *fiber.Ctx) error {
 	var data map[string]string
 
+	// Parse the request body
 	if err := c.BodyParser(&data); err != nil {
-		return err
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid request body",
+		})
 	}
 
-	id, _ := middlewares.GetUserId(c)
+	// Get the user ID from the middleware
+	id, err := middlewares.GetUserId(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"message": "Unauthorized",
+		})
+	}
 
-	user := models.User{
+	// Validate required fields
+	if data["first_name"] == "" || data["last_name"] == "" || data["email"] == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "First name, last name, and email are required",
+		})
+	}
+
+	// Update user information in the database
+	result := database.DB.Model(&models.User{}).Where("id = ?", id).Updates(models.User{
 		FirstName: data["first_name"],
 		LastName:  data["last_name"],
 		Email:     data["email"],
+	})
+
+	// Check for database errors
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to update user information",
+		})
 	}
-	user.Id = id
 
-	database.DB.Model(&user).Updates(&user)
+	// Check if the user was found and updated
+	if result.RowsAffected == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "User not found",
+		})
+	}
 
-	return c.JSON(user)
+	// Return a success message
+	return c.JSON(fiber.Map{
+		"message": "User information updated successfully",
+	})
 }
 
 func UpdatePassword(c *fiber.Ctx) error {
 	var data map[string]string
 
+	// Parse the request body
 	if err := c.BodyParser(&data); err != nil {
-		return err
-	}
-
-	if data["password"] != data["password_confirm"] {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"message": "passwords do not match",
+			"message": "Invalid request body",
 		})
 	}
 
-	id, _ := middlewares.GetUserId(c)
+	// Validate password and password confirmation
+	if data["password"] != data["password_confirm"] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Passwords do not match",
+		})
+	}
+
+	// Get the user ID from the middleware
+	id, err := middlewares.GetUserId(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"message": "Unauthorized",
+		})
+	}
 
 	user := models.User{}
-	user.Id = id
+	//user.Id = id
+	//user.SetPassword(data["password"])
 
-	user.SetPassword(data["password"])
+	// Update the password in the database
+	result := database.DB.Model(user).Where("id = ?", id).Update("password", user.Password)
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to update password",
+		})
+	}
 
-	database.DB.Model(&user).Updates(&user)
+	// Check if the password was updated
+	if result.RowsAffected == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "User not found",
+		})
+	}
 
-	return c.JSON(user)
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Password updated successfully",
+	})
 }
