@@ -5,7 +5,10 @@ import (
 	"ambassador/src/models"
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,70 +24,205 @@ func Products(c *fiber.Ctx) error {
 
 func CreateProduct(c *fiber.Ctx) error {
 	var product models.Product
+
+	// Parse the request body
 	if err := c.BodyParser(&product); err != nil {
-		return err
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid request body",
+		})
 	}
 
-	database.DB.Create(&product)
+	// Validate required fields
+	if product.Title == "" || product.Description == "" || product.Image == "" || product.Price <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Title, description, image, and price are required, and price must be greater than 0",
+		})
+	}
+
+	// Create the product in the database
+	if err := database.DB.Create(&product).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to create product",
+		})
+	}
+
+	// Clear the cache asynchronously
 	go database.ClearCache("products_frontend", "products_backend")
 
-	return c.JSON(&product)
+	// Return the created product
+	return c.Status(fiber.StatusCreated).JSON(product)
 }
 
 func GetProduct(c *fiber.Ctx) error {
+	// Parse the product ID from the URL parameter
+	id, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid product ID",
+		})
+	}
+
+	// Fetch the product from the database
 	var product models.Product
-	id, _ := strconv.Atoi(c.Params("id"))
-	product.Id = uint(id)
+	if err := database.DB.First(&product, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "Product not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch product",
+		})
+	}
 
-	database.DB.Find(&product)
-
+	// Return the product
 	return c.JSON(product)
 }
 
 func DeleteProduct(c *fiber.Ctx) error {
-	id, _ := strconv.Atoi(c.Params("id"))
+	// Parse the product ID from the URL parameter
+	id, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid product ID",
+		})
+	}
 
-	database.DB.Delete(&models.Product{}, id)
+	// Check if the product exists before deleting
+	var product models.Product
+	if err := database.DB.First(&product, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "Product not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch product",
+		})
+	}
+
+	// Delete the product from the database
+	if err := database.DB.Delete(&product).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to delete product",
+		})
+	}
+
+	// Clear the cache asynchronously
 	go database.ClearCache("products_frontend", "products_backend")
 
+	// Return a success message
 	return c.JSON(fiber.Map{
-		"message": "Product deleted",
+		"message": "Product deleted successfully",
 	})
 }
 
 func UpdateProduct(c *fiber.Ctx) error {
-	id, _ := strconv.Atoi(c.Params("id"))
-	var product models.Product
-	if err := c.BodyParser(&product); err != nil {
-		return err
+	// Parse the product ID from the URL parameter
+	id, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid product ID",
+		})
 	}
 
-	database.DB.Model(&product).Where("id = ?", id).Updates(product)
+	// Parse the request body
+	var product models.Product
+	if err := c.BodyParser(&product); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid request body",
+		})
+	}
+
+	// Validate required fields
+	if product.Title == "" || product.Description == "" || product.Image == "" || product.Price <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Title, description, image, and price are required, and price must be greater than 0",
+		})
+	}
+
+	// Check if the product exists before updating
+	var existingProduct models.Product
+	if err := database.DB.First(&existingProduct, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "Product not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch product",
+		})
+	}
+
+	// Update the product in the database
+	result := database.DB.Model(&models.Product{}).Where("id = ?", id).Updates(product)
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to update product",
+		})
+	}
+
+	// Check if the product was updated
+	if result.RowsAffected == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "Product not found",
+		})
+	}
+
+	// Clear the cache asynchronously
 	go database.ClearCache("products_frontend", "products_backend")
 
+	// Return the updated product
 	return c.JSON(product)
 }
 
+/*
+The ProductsFrontend function is designed to fetch a list of products from a
+cache (e.g., Redis). If the data is not found in the cache, it fetches the
+products from the database, stores them in the cache, and returns the products.
+*/
 func ProductsFrontend(c *fiber.Ctx) error {
 	var products []models.Product
-	var ctx = context.Background()
+	ctx := context.Background()
+	cacheKey := "products_frontend"
 
-	result, err := database.Cache.Get(ctx, "products_frontend").Result()
-	if err != nil {
-		database.DB.Find(&products)
-
-		bytes, err := json.Marshal(products)
-		if err != nil {
-			panic(err)
+	// Try to fetch products from the cache
+	result, err := database.Cache.Get(ctx, cacheKey).Result()
+	if err == nil {
+		// Cache hit: Deserialize the cached data
+		if err := json.Unmarshal([]byte(result), &products); err != nil {
+			log.Printf("Failed to unmarshal cached products: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to process cached data",
+			})
 		}
-
-		if errKey := database.Cache.Set(ctx, "products_frontend", bytes, 30*time.Minute).Err(); errKey != nil {
-			panic(errKey)
-		}
-	} else {
-		json.Unmarshal([]byte(result), &products)
+		return c.JSON(products)
 	}
 
+	// Cache miss: Fetch products from the database
+	if err := database.DB.Find(&products).Error; err != nil {
+		log.Printf("Failed to fetch products from database: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch products",
+		})
+	}
+
+	// Serialize products to JSON
+	bytes, err := json.Marshal(products)
+	if err != nil {
+		log.Printf("Failed to marshal products: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to process products",
+		})
+	}
+
+	// Store products in the cache
+	if err := database.Cache.Set(ctx, cacheKey, bytes, 30*time.Minute).Err(); err != nil {
+		log.Printf("Failed to update cache: %v", err)
+		// Do not return an error; continue to serve the response
+	}
+
+	// Return the products
 	return c.JSON(products)
 }
 
