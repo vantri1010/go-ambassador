@@ -4,7 +4,10 @@ import (
 	"ambassador/src/database"
 	"ambassador/src/middlewares"
 	"ambassador/src/models"
+	"errors"
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
+	"log"
 	"strings"
 	"time"
 )
@@ -86,20 +89,68 @@ func Login(c *fiber.Ctx) error {
 	})
 }
 
-// User Send cookie get user
 func User(c *fiber.Ctx) error {
-	id, _ := middlewares.GetUserId(c)
+	// Get the user ID from the middleware
+	id, err := middlewares.GetUserId(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"message": "Unauthorized",
+		})
+	}
 
+	// Fetch the user from the database
 	var user models.User
-	database.DB.Model(&models.User{}).Where("id = ?", id).First(&user)
+	if err := database.DB.Where("id = ?", id).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "User not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch user",
+		})
+	}
 
+	// Check if the request is from the ambassador endpoint
 	if strings.Contains(c.Path(), "/api/ambassador") {
+		// Fetch orders and calculate revenue
+		revenue, err := calculateRevenueForUser(user.Id, database.DB)
+		if err != nil {
+			log.Printf("Failed to calculate ambassador revenue: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to calculate revenue",
+			})
+		}
+
+		// Create an ambassador and set the revenue
 		ambassador := models.Ambassador(user)
-		ambassador.CalculateRevenue(database.DB)
+		ambassador.Revenue = &revenue
 		return c.JSON(ambassador)
 	}
 
+	// Return the user
 	return c.JSON(user)
+}
+
+// calculateRevenueForUser calculates the revenue for a specific user
+func calculateRevenueForUser(userID uint, db *gorm.DB) (float64, error) {
+	var orders []models.Order
+
+	// Fetch all completed orders and order items for the user
+	if err := db.Preload("OrderItems").Where("user_id = ? AND complete = ?", userID, true).Find(&orders).Error; err != nil {
+		log.Printf("Failed to fetch orders for user %d: %v", userID, err)
+		return 0, err
+	}
+
+	// Calculate revenue
+	var revenue float64 = 0.0
+	for _, order := range orders {
+		for _, orderItem := range order.OrderItems {
+			revenue += orderItem.AmbassadorRevenue
+		}
+	}
+
+	return revenue, nil
 }
 
 // Logout by remove cookie. remove cookie by set it expired one hour
@@ -196,8 +247,8 @@ func UpdatePassword(c *fiber.Ctx) error {
 	}
 
 	user := models.User{}
-	//user.Id = id
-	//user.SetPassword(data["password"])
+	user.Id = id
+	user.SetPassword(data["password"])
 
 	// Update the password in the database
 	result := database.DB.Model(user).Where("id = ?", id).Update("password", user.Password)
