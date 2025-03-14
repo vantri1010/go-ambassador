@@ -1,6 +1,8 @@
 version: '3.9'
 services:
   backend:
+    environment:
+      STRIPE_SECRET_KEY: 'insert-your-stripe-key'
     build:
       context: .
       dockerfile: Dockerfile

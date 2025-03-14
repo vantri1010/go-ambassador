@@ -29,15 +29,15 @@ func Orders(c *fiber.Ctx) error {
 }
 
 type CreateOrderRequest struct {
-	Code      string
-	FirstName string
-	LastName  string
-	Email     string
-	Address   string
-	Country   string
-	City      string
-	Zip       string
-	Products  []map[string]int
+	FirstName string           `json:"first_name"`
+	LastName  string           `json:"last_name"`
+	Email     string           `json:"email"`
+	Address   string           `json:"address"`
+	Country   string           `json:"country"`
+	City      string           `json:"city"`
+	Zip       string           `json:"zip"`
+	Code      string           `json:"code"`
+	Products  []map[string]int `json:"products"`
 }
 
 func CreateOrder(c *fiber.Ctx) error {
@@ -54,6 +54,15 @@ func CreateOrder(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "First name, last name, and email are required",
 		})
+	}
+
+	// Validate product quantities
+	for _, product := range request.Products {
+		if product["quantity"] < 1 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"message": "Quantity for each product must be at least 1",
+			})
+		}
 	}
 
 	link := models.Link{}
