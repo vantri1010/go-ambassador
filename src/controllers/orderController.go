@@ -15,11 +15,18 @@ import (
 	"os"
 )
 
+// Orders fetches all orders with their order items and calculates totals.
 func Orders(c *fiber.Ctx) error {
 	var orders []models.Order
 
-	database.DB.Preload("OrderItems").Find(&orders)
+	// Fetch all orders with their order items
+	if err := database.DB.Preload("OrderItems").Find(&orders).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch orders",
+		})
+	}
 
+	// Calculate the total for each order
 	for i, order := range orders {
 		orders[i].Name = order.FullName()
 		orders[i].Total = order.GetTotal()
@@ -28,28 +35,31 @@ func Orders(c *fiber.Ctx) error {
 	return c.JSON(orders)
 }
 
+// CreateOrderRequest defines the request body for creating an order.
 type CreateOrderRequest struct {
-	FirstName string           `json:"first_name"`
-	LastName  string           `json:"last_name"`
-	Email     string           `json:"email"`
-	Address   string           `json:"address"`
-	Country   string           `json:"country"`
-	City      string           `json:"city"`
-	Zip       string           `json:"zip"`
-	Code      string           `json:"code"`
-	Products  []map[string]int `json:"products"`
+	FirstName string           `json:"first_name" validate:"required"`
+	LastName  string           `json:"last_name" validate:"required"`
+	Email     string           `json:"email" validate:"required,email"`
+	Address   string           `json:"address" validate:"required"`
+	Country   string           `json:"country" validate:"required"`
+	City      string           `json:"city" validate:"required"`
+	Zip       string           `json:"zip" validate:"required"`
+	Code      string           `json:"code" validate:"required"`
+	Products  []map[string]int `json:"products" validate:"required,min=1"`
 }
 
+// CreateOrder handles the creation of a new order and Stripe checkout session.
 func CreateOrder(c *fiber.Ctx) error {
 	var request CreateOrderRequest
 
+	// Parse and validate the request body
 	if err := c.BodyParser(&request); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "Invalid request body",
 		})
 	}
 
-	// Input validation
+	// Validate required fields
 	if len(request.FirstName) == 0 || len(request.LastName) == 0 || len(request.Email) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "First name, last name, and email are required",
@@ -65,16 +75,20 @@ func CreateOrder(c *fiber.Ctx) error {
 		}
 	}
 
+	// Fetch the link associated with the order
 	link := models.Link{}
-
-	database.DB.Preload("User").Where("code = ?", request.Code).First(&link)
-
-	if link.Id == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"message": "Invalid link!",
+	if err := database.DB.Preload("User").Where("code = ?", request.Code).First(&link).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"message": "Invalid link!",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch link",
 		})
 	}
 
+	// Create the order
 	order := models.Order{
 		Code:            link.Code,
 		UserId:          link.UserId,
@@ -88,8 +102,15 @@ func CreateOrder(c *fiber.Ctx) error {
 		Zip:             request.Zip,
 	}
 
+	// Start a database transaction
 	tx := database.DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
 
+	// Save the order to the database
 	if err := tx.Create(&order).Error; err != nil {
 		tx.Rollback()
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -97,12 +118,17 @@ func CreateOrder(c *fiber.Ctx) error {
 		})
 	}
 
+	// Prepare line items for Stripe checkout
 	var lineItems []*stripe.CheckoutSessionLineItemParams
 
 	for _, requestProduct := range request.Products {
 		product := models.Product{}
-		product.Id = uint(requestProduct["product_id"])
-		database.DB.First(&product)
+		if err := database.DB.First(&product, requestProduct["product_id"]).Error; err != nil {
+			tx.Rollback()
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"message": "Invalid product ID",
+			})
+		}
 
 		total := product.Price * float64(requestProduct["quantity"])
 
@@ -115,6 +141,7 @@ func CreateOrder(c *fiber.Ctx) error {
 			AdminRevenue:      0.9 * total,
 		}
 
+		// Save the order item to the database
 		if err := tx.Create(&item).Error; err != nil {
 			tx.Rollback()
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -136,8 +163,10 @@ func CreateOrder(c *fiber.Ctx) error {
 		})
 	}
 
+	// Set the Stripe secret key
 	stripe.Key = os.Getenv("STRIPE_SECRET_KEY")
 
+	// Create a Stripe checkout session
 	params := stripe.CheckoutSessionParams{
 		SuccessURL:         stripe.String("http://localhost:5000/success?source={CHECKOUT_SESSION_ID}"),
 		CancelURL:          stripe.String("http://localhost:5000/error"),
@@ -147,7 +176,6 @@ func CreateOrder(c *fiber.Ctx) error {
 	}
 
 	source, err := session.New(&params)
-
 	if err != nil {
 		tx.Rollback()
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -155,8 +183,8 @@ func CreateOrder(c *fiber.Ctx) error {
 		})
 	}
 
+	// Update the order with the Stripe transaction ID
 	order.TransactionId = source.ID
-
 	if err := tx.Save(&order).Error; err != nil {
 		tx.Rollback()
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -164,6 +192,7 @@ func CreateOrder(c *fiber.Ctx) error {
 		})
 	}
 
+	// Commit the transaction
 	tx.Commit()
 
 	return c.JSON(source)

@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// Ambassadors returns a list of ambassadors with their calculated revenue.
 func Ambassadors(c *fiber.Ctx) error {
 	var users []models.User
 	ctx := context.Background()
@@ -31,6 +32,7 @@ func Ambassadors(c *fiber.Ctx) error {
 
 	// Cache miss: Fetch and calculate revenue
 	if err := fetchAndCalculateRevenue(&users); err != nil {
+		log.Printf("Failed to fetch and calculate revenue: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch ambassadors",
 		})
@@ -55,6 +57,7 @@ func Ambassadors(c *fiber.Ctx) error {
 	return c.JSON(users)
 }
 
+// fetchAndCalculateRevenue fetches ambassadors and calculates their revenue.
 func fetchAndCalculateRevenue(users *[]models.User) error {
 	// Fetch all ambassadors
 	if err := database.DB.Where("is_ambassador = ?", true).Find(users).Error; err != nil {
@@ -94,6 +97,7 @@ func fetchAndCalculateRevenue(users *[]models.User) error {
 	return nil
 }
 
+// Rankings returns the rankings of ambassadors based on their revenue.
 func Rankings(c *fiber.Ctx) error {
 	rankings, err := database.Cache.ZRevRangeByScoreWithScores(context.Background(), "rankings", &redis.ZRangeBy{
 		Min: "-inf",
@@ -101,7 +105,10 @@ func Rankings(c *fiber.Ctx) error {
 	}).Result()
 
 	if err != nil {
-		return err
+		log.Printf("Failed to fetch rankings: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch rankings",
+		})
 	}
 
 	result := make(map[string]float64)

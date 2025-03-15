@@ -12,69 +12,97 @@ import (
 	"time"
 )
 
+// Register handles user registration.
 func Register(c *fiber.Ctx) error {
 	var data map[string]string
 
+	// Parse the request body
 	if err := c.BodyParser(&data); err != nil {
-		return err
-	}
-
-	if data["password"] != data["password_confirm"] {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"message": "passwords do not match",
+			"message": "Invalid request body",
 		})
 	}
 
+	// Validate password and password confirmation
+	if data["password"] != data["password_confirm"] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Passwords do not match",
+		})
+	}
+
+	// Create the user
 	user := models.User{
 		FirstName:    data["first_name"],
 		LastName:     data["last_name"],
 		Email:        data["email"],
 		IsAmbassador: strings.Contains(c.Path(), "/api/ambassador"),
 	}
+
+	// Set the user's password
 	user.SetPassword(data["password"])
 
-	database.DB.Create(&user)
+	// Save the user to the database
+	if err := database.DB.Create(&user).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to create user",
+		})
+	}
 
 	return c.JSON(user)
 }
 
+// Login handles user login and JWT token generation.
 func Login(c *fiber.Ctx) error {
 	var data map[string]string
 
+	// Parse the request body
 	if err := c.BodyParser(&data); err != nil {
-		return err
-	}
-
-	user := models.User{}
-	database.DB.Where("email = ?", data["email"]).First(&user)
-	if user.Id == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"message": "Invalid Credentials",
+			"message": "Invalid request body",
 		})
 	}
 
+	// Fetch the user from the database
+	var user models.User
+	if err := database.DB.Where("email = ?", data["email"]).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"message": "Invalid Credentials",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch user",
+		})
+	}
+
+	// Compare the provided password with the stored hash
 	if err := user.ComparePassword(data["password"]); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "Invalid Credentials",
 		})
 	}
 
+	// Determine the scope based on the request path
 	isAmbassador := strings.Contains(c.Path(), "/api/ambassador")
 	scope := "admin"
 
 	if isAmbassador {
 		scope = "ambassador"
-	} else if user.IsAmbassador { // When ambassador user try to login to admin link
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"message": "unauthorized non-admin user"})
-	}
-
-	token, err := middlewares.GenerateJWT(user.Id, scope)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Invalid Credentials",
+	} else if user.IsAmbassador { // Prevent ambassador users from logging in as admin
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"message": "Unauthorized non-admin user",
 		})
 	}
 
+	// Generate a JWT token
+	token, err := middlewares.GenerateJWT(user.Id, scope)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to generate token",
+		})
+	}
+
+	// Set the JWT token in a cookie
 	cookie := fiber.Cookie{
 		Name:     "jwt",
 		Value:    token,
@@ -155,6 +183,7 @@ func calculateRevenueForUser(userID uint, db *gorm.DB) (float64, error) {
 
 // Logout by remove cookie. remove cookie by set it expired one hour
 func Logout(c *fiber.Ctx) error {
+	// Clear the JWT cookie by setting it to expire in the past
 	cookie := fiber.Cookie{
 		Name:     "jwt",
 		Value:    "",

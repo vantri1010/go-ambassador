@@ -15,13 +15,19 @@ import (
 	"time"
 )
 
+// Products returns all products from the database.
 func Products(c *fiber.Ctx) error {
 	var products []models.Product
-	database.DB.Find(&products)
-
-	return c.JSON(&products)
+	if err := database.DB.Find(&products).Error; err != nil {
+		log.Printf("Failed to fetch products: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch products",
+		})
+	}
+	return c.JSON(products)
 }
 
+// CreateProduct creates a new product in the database.
 func CreateProduct(c *fiber.Ctx) error {
 	var product models.Product
 
@@ -41,6 +47,7 @@ func CreateProduct(c *fiber.Ctx) error {
 
 	// Create the product in the database
 	if err := database.DB.Create(&product).Error; err != nil {
+		log.Printf("Failed to create product: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to create product",
 		})
@@ -53,6 +60,7 @@ func CreateProduct(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(product)
 }
 
+// GetProduct retrieves a single product by ID.
 func GetProduct(c *fiber.Ctx) error {
 	// Parse the product ID from the URL parameter
 	id, err := strconv.Atoi(c.Params("id"))
@@ -70,6 +78,7 @@ func GetProduct(c *fiber.Ctx) error {
 				"message": "Product not found",
 			})
 		}
+		log.Printf("Failed to fetch product: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch product",
 		})
@@ -79,6 +88,7 @@ func GetProduct(c *fiber.Ctx) error {
 	return c.JSON(product)
 }
 
+// DeleteProduct deletes a product by ID.
 func DeleteProduct(c *fiber.Ctx) error {
 	// Parse the product ID from the URL parameter
 	id, err := strconv.Atoi(c.Params("id"))
@@ -96,6 +106,7 @@ func DeleteProduct(c *fiber.Ctx) error {
 				"message": "Product not found",
 			})
 		}
+		log.Printf("Failed to fetch product: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch product",
 		})
@@ -103,6 +114,7 @@ func DeleteProduct(c *fiber.Ctx) error {
 
 	// Delete the product from the database
 	if err := database.DB.Delete(&product).Error; err != nil {
+		log.Printf("Failed to delete product: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to delete product",
 		})
@@ -117,6 +129,7 @@ func DeleteProduct(c *fiber.Ctx) error {
 	})
 }
 
+// UpdateProduct updates an existing product by ID.
 func UpdateProduct(c *fiber.Ctx) error {
 	// Parse the product ID from the URL parameter
 	id, err := strconv.Atoi(c.Params("id"))
@@ -149,6 +162,7 @@ func UpdateProduct(c *fiber.Ctx) error {
 				"message": "Product not found",
 			})
 		}
+		log.Printf("Failed to fetch product: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch product",
 		})
@@ -157,6 +171,7 @@ func UpdateProduct(c *fiber.Ctx) error {
 	// Update the product in the database
 	result := database.DB.Model(&models.Product{}).Where("id = ?", id).Updates(product)
 	if result.Error != nil {
+		log.Printf("Failed to update product: %v", result.Error)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to update product",
 		})
@@ -226,26 +241,48 @@ func ProductsFrontend(c *fiber.Ctx) error {
 	return c.JSON(products)
 }
 
+// ProductsBackend fetches products with search, sort, and pagination.
 func ProductsBackend(c *fiber.Ctx) error {
 	var products []models.Product
 	var ctx = context.Background()
 
+	// Try to fetch products from the cache
 	result, err := database.Cache.Get(ctx, "products_backend").Result()
 	if err != nil {
-		database.DB.Find(&products)
-
-		bytes, err := json.Marshal(products)
-		if err != nil {
-			panic(err)
+		// Cache miss: Fetch products from the database
+		if err := database.DB.Find(&products).Error; err != nil {
+			log.Printf("Failed to fetch products from database: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to fetch products",
+			})
 		}
 
-		database.Cache.Set(ctx, "products_backend", bytes, 30*time.Minute)
+		// Serialize products to JSON
+		bytes, err := json.Marshal(products)
+		if err != nil {
+			log.Printf("Failed to marshal products: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to process products",
+			})
+		}
+
+		// Store products in the cache
+		if err := database.Cache.Set(ctx, "products_backend", bytes, 30*time.Minute).Err(); err != nil {
+			log.Printf("Failed to update cache: %v", err)
+			// Do not return an error; continue to serve the response
+		}
 	} else {
-		json.Unmarshal([]byte(result), &products)
+		// Cache hit: Deserialize the cached data
+		if err := json.Unmarshal([]byte(result), &products); err != nil {
+			log.Printf("Failed to unmarshal cached products: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to process cached data",
+			})
+		}
 	}
 
+	// Filter products based on search query
 	var searchedProducts []models.Product
-
 	if s := c.Query("s"); s != "" {
 		lower := strings.ToLower(s)
 		for _, product := range products {
@@ -257,6 +294,7 @@ func ProductsBackend(c *fiber.Ctx) error {
 		searchedProducts = products
 	}
 
+	// Sort products based on sort query
 	if sortParam := c.Query("sort"); sortParam != "" {
 		sortLower := strings.ToLower(sortParam)
 		if sortLower == "asc" {
@@ -270,6 +308,7 @@ func ProductsBackend(c *fiber.Ctx) error {
 		}
 	}
 
+	// Paginate products
 	var total = len(searchedProducts)
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	itemsPerPage := 9
@@ -290,7 +329,6 @@ func ProductsBackend(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"data": data,
-
 		"meta": fiber.Map{
 			"total":     total,
 			"page":      page,
