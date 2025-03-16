@@ -4,6 +4,7 @@ import (
 	"ambassador/src/database"
 	"ambassador/src/middlewares"
 	"ambassador/src/models"
+	"context"
 	"errors"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -12,7 +13,6 @@ import (
 	"time"
 )
 
-// Register handles user registration.
 func Register(c *fiber.Ctx) error {
 	var data map[string]string
 
@@ -48,7 +48,16 @@ func Register(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(user)
+	// Clear the ambassadors cache
+	ctx := context.Background()
+	cacheKey := "ambassadors_with_revenue"
+	if err := database.Cache.Del(ctx, cacheKey).Err(); err != nil {
+		log.Printf("Failed to clear cache: %v", err)
+		// Do not return an error; continue to serve the response
+	}
+
+	// Return the created user
+	return c.Status(fiber.StatusCreated).JSON(user)
 }
 
 // Login handles user login and JWT token generation.
@@ -242,6 +251,14 @@ func UpdateInfo(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"message": "User not found",
 		})
+	}
+
+	// Clear the ambassadors cache
+	ctx := context.Background()
+	cacheKey := "ambassadors_with_revenue"
+	if err := database.Cache.Del(ctx, cacheKey).Err(); err != nil {
+		log.Printf("Failed to clear cache: %v", err)
+		// Do not return an error; continue to serve the response
 	}
 
 	// Return a success message

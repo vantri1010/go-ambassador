@@ -19,7 +19,7 @@ func Link(c *fiber.Ctx) error {
 		})
 	}
 
-	// Fetch all links for the user
+	// Fetch links for the user
 	var links []models.Link
 	if err := database.DB.Where("user_id = ?", id).Find(&links).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -27,23 +27,33 @@ func Link(c *fiber.Ctx) error {
 		})
 	}
 
-	// Fetch all orders for the links in one query and preload OrderItems
+	// Extract link codes for querying orders
+	var linkCodes []string
+	for _, link := range links {
+		linkCodes = append(linkCodes, link.Code)
+	}
+
+	// Fetch all orders linked to those codes, preloading OrderItems
 	var orders []models.Order
-	if err := database.DB.Preload("OrderItems").Where("code IN (SELECT code FROM links WHERE user_id = ?) AND complete = ?", id, true).Find(&orders).Error; err != nil {
+	if err := database.DB.
+		Preload("OrderItems").
+		Where("code IN ?", linkCodes).
+		Where("complete = ?", true).
+		Find(&orders).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch orders",
 		})
 	}
 
-	// Group orders by link code and calculate totals
+	// Map orders to their respective link codes
 	ordersByCode := make(map[string][]models.Order)
 	for _, order := range orders {
-		// Calculate the total for the order
+		// Calculate total for each order
 		total := 0.0
 		for _, item := range order.OrderItems {
 			total += item.Price * float64(item.Quantity)
 		}
-		order.Total = total // Assign the calculated total to the order
+		order.Total = total
 
 		// Group orders by link code
 		ordersByCode[order.Code] = append(ordersByCode[order.Code], order)
