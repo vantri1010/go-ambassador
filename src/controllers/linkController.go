@@ -19,52 +19,33 @@ func Link(c *fiber.Ctx) error {
 		})
 	}
 
-	// Fetch links for the user
-	var links []models.Link
-	if err := database.DB.Where("user_id = ?", id).Find(&links).Error; err != nil {
+	// Struct to hold query results
+	type LinkResult struct {
+		ID         uint    `json:"id"`
+		Code       string  `json:"code"`
+		OrderCount int64   `json:"order_count"`
+		Total      float64 `json:"total"`
+	}
+
+	var results []LinkResult
+
+	// GORM Query
+	err = database.DB.
+		Table("links AS l").
+		Select("l.id, l.code, COUNT(o.id) AS order_count, COALESCE(SUM(oi.price * oi.quantity), 0) AS total").
+		Joins("LEFT JOIN orders o ON l.code = o.code AND o.complete = ?", true).
+		Joins("LEFT JOIN order_items oi ON o.id = oi.order_id").
+		Where("l.user_id = ?", id).
+		Group("l.id, l.code").
+		Scan(&results).Error
+
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch links",
 		})
 	}
 
-	// Extract link codes for querying orders
-	var linkCodes []string
-	for _, link := range links {
-		linkCodes = append(linkCodes, link.Code)
-	}
-
-	// Fetch all orders linked to those codes, preloading OrderItems
-	var orders []models.Order
-	if err := database.DB.
-		Preload("OrderItems").
-		Where("code IN ?", linkCodes).
-		Where("complete = ?", true).
-		Find(&orders).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to fetch orders",
-		})
-	}
-
-	// Map orders to their respective link codes
-	ordersByCode := make(map[string][]models.Order)
-	for _, order := range orders {
-		// Calculate total for each order
-		total := 0.0
-		for _, item := range order.OrderItems {
-			total += item.Price * float64(item.Quantity)
-		}
-		order.Total = total
-
-		// Group orders by link code
-		ordersByCode[order.Code] = append(ordersByCode[order.Code], order)
-	}
-
-	// Attach orders to their respective links
-	for i, link := range links {
-		links[i].Orders = ordersByCode[link.Code]
-	}
-
-	return c.JSON(links)
+	return c.JSON(results)
 }
 
 // CreateLinkRequest defines the request body for creating a link.
