@@ -29,10 +29,10 @@ func Link(c *fiber.Ctx) error {
 
 	var results []LinkResult
 
-	// GORM Query
+	// GORM Query (Using COUNT DISTINCT for orders)
 	err = database.DB.
 		Table("links AS l").
-		Select("l.id, l.code, COUNT(o.id) AS order_count, COALESCE(SUM(oi.price * oi.quantity), 0) AS total").
+		Select("l.id, l.code, COUNT(DISTINCT o.id) AS order_count, COALESCE(SUM(oi.price * oi.quantity), 0) AS total").
 		Joins("LEFT JOIN orders o ON l.code = o.code AND o.complete = ?", true).
 		Joins("LEFT JOIN order_items oi ON o.id = oi.order_id").
 		Where("l.user_id = ?", id).
